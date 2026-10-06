@@ -100,6 +100,12 @@ bool touch_disabled = false;
 #define CUMSIZE   22
 #define CUMACCEL  23
 
+// Rotation axis commands (must match the mainboard exactly)
+#define ROT_ON 30
+#define ROT_OFF 31
+#define ROT_SPEED 32
+#define ROT_PATTERN 33
+
 #define CONNECT 88
 #define HEARTBEAT 99
 
@@ -113,6 +119,8 @@ int S3Pos;
 int S4Pos;
 bool rstate = false;
 int pattern = 2;
+float rotationSpeed = 0.0;
+int rotationPattern = 0;
 char patternstr[20];
 bool onoff = false;
 
@@ -196,6 +204,8 @@ typedef struct struct_message {
   int esp_command;
   float esp_value;
   int esp_target;
+  float esp_rotation_speed;
+  float esp_rotation_pattern;
 } struct_message;
 
 bool Ossm_paired = false;
@@ -345,6 +355,8 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
     LogDebug(maxdepthinmm);
     pattern = incomingcontrol.esp_pattern;
     LogDebug(pattern);
+    rotationSpeed = incomingcontrol.esp_rotation_speed;
+    rotationPattern = (int)incomingcontrol.esp_rotation_pattern;
     outgoingcontrol.esp_target = OSSM_ID;
     
     result = esp_now_send(OSSM_Address, (uint8_t *) &outgoingcontrol, sizeof(outgoingcontrol));
@@ -389,6 +401,34 @@ bool SendCommand(int Command, float Value, int Target){
       delay(20);
       esp_err_t result = esp_now_send(OSSM_Address, (uint8_t *) &outgoingcontrol, sizeof(outgoingcontrol));
       return false;
+    }
+  }
+}
+
+void rotationStart()                 { SendCommand(ROT_ON, 0.0, OSSM_ID); }
+void rotationStop()                  { SendCommand(ROT_OFF, 0.0, OSSM_ID); }
+void rotationSetSpeed(float percent) { SendCommand(ROT_SPEED, percent, OSSM_ID); }
+void rotationSetPattern(int index)   { SendCommand(ROT_PATTERN, (float)index, OSSM_ID); }
+
+// Bench test: type a command in the Serial Monitor and press Enter
+//   r1 = start, r0 = stop, rs50 = speed 50%, rp2 = pattern index 2
+void handleSerialTest() {
+  static char buf[16];
+  static uint8_t n = 0;
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (n > 0) {
+        buf[n] = 0;
+        if (strcmp(buf, "r1") == 0)              rotationStart();
+        else if (strcmp(buf, "r0") == 0)         rotationStop();
+        else if (strncmp(buf, "rs", 2) == 0)     rotationSetSpeed(atof(buf + 2));
+        else if (strncmp(buf, "rp", 2) == 0)     rotationSetPattern(atoi(buf + 2));
+        LogDebug(buf);
+        n = 0;
+      }
+    } else if (n < sizeof(buf) - 1) {
+      buf[n++] = c;
     }
   }
 }
@@ -647,6 +687,7 @@ void loop()
      lv_label_set_text(ui_BattValue5, battVal);
 
      M5.update();
+     handleSerialTest();
      lv_task_handler();
      Button1.tick();
      Button2.tick();
