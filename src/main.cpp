@@ -570,6 +570,7 @@ void setupdepthF(lv_event_t * e){
 void setup(){
   auto cfg = M5.config();
   M5.begin(cfg);
+  M5.Display.setBrightness(200);
 
   m5prf.begin("m5-ctnr", false); 
     // Loads these settings at boot
@@ -632,19 +633,19 @@ void setup(){
   M5.Display.setRotation(M5.Display.getRotation() ^ 1);
   }
   
-  lv_init();
+  M5.Display.fillScreen(TFT_RED); LogDebug("DBG lv_init"); lv_init();
   lv_tick_set_cb(my_tick_function);
 
   display = lv_display_create(HOR_RES, VER_RES);
   lv_display_set_flush_cb(display, my_display_flush);
 
-  static lv_color_t buf1[HOR_RES * 15]; 
+  static lv_color_t buf1[HOR_RES * 15] __attribute__((aligned(64))); 
   lv_display_set_buffers(display, buf1, nullptr, sizeof(buf1), LV_DISPLAY_RENDER_MODE_PARTIAL);
 
   indev = lv_indev_create();
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(indev, my_touchpad_read);
-  ui_init();  
+  M5.Display.fillScreen(TFT_GREEN); LogDebug("DBG ui_init"); ui_init(); M5.Display.fillScreen(TFT_BLUE); LogDebug("DBG ui_done");  
 
   if(eject_status == true){
   lv_obj_add_state(ui_ejectaddon, LV_STATE_CHECKED);
@@ -687,7 +688,7 @@ void loop()
      lv_label_set_text(ui_BattValue5, battVal);
 
      M5.update();
-     handleSerialTest();
+     // handleSerialTest();
      lv_task_handler();
      Button1.tick();
      Button2.tick();
