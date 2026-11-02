@@ -415,7 +415,7 @@ void rotationSetPattern(int index)   { SendCommand(ROT_PATTERN, (float)index, OS
 void handleSerialTest() {
   static char buf[16];
   static uint8_t n = 0;
-  while (Serial.available()) {
+  while (Serial.available() > 0) {
     char c = Serial.read();
     if (c == '\n' || c == '\r') {
       if (n > 0) {
@@ -555,7 +555,7 @@ void homebuttonmevent(lv_event_t * e){
   if(OSSM_On == false){
     SendCommand(ON, 0.0, OSSM_ID);
   } else if(OSSM_On == true){
-    SendCommand(OFF, 0.0, OSSM_ID);
+    SendCommand(OFF, 0.0, OSSM_ID); rotationStop();
   }
 }
 
@@ -569,7 +569,7 @@ void setupdepthF(lv_event_t * e){
 
 void setup(){
   auto cfg = M5.config();
-  M5.begin(cfg);
+  M5.begin(cfg); Serial.begin(115200);
   M5.Display.setBrightness(200);
 
   m5prf.begin("m5-ctnr", false); 
@@ -688,7 +688,7 @@ void loop()
      lv_label_set_text(ui_BattValue5, battVal);
 
      M5.update();
-     // handleSerialTest();
+     handleSerialTest();
      lv_task_handler();
      Button1.tick();
      Button2.tick();
