@@ -121,11 +121,11 @@ bool touch_disabled = false;
 #define ROT_PATTERN 33
 #define ROT_DIR 34
 #define ROT_SENS 35        // must match mainboard
-#define ROT_OVERDRIVE 36   // must match mainboard
+#define ROT_BURST 36       // must match mainboard: burst speed, percent of the dial cap (was ROT_OVERDRIVE)
 #define COMBO 37           // must match mainboard
-#define TWEAK_BURST 38     // must match mainboard
-#define TWEAK_DIAL 39      // must match mainboard
-#define TWEAK_SPARE 40     // must match mainboard
+// 38 retired (was TWEAK_BURST)
+#define TWEAK_DIAL 39      // must match mainboard: dial cap in RPM, hard ceiling
+#define TWEAK_REVERSE 40   // must match mainboard: flips the whole rotation axis direction (was TWEAK_SPARE)
 
 #define CONNECT 88
 #define HEARTBEAT 99
@@ -144,19 +144,16 @@ float rotationSpeed = 0.0;
 int rotationPattern = 0;
 bool RotationOn = false;
 bool rotationDirection = false;
-float rotationSensation = 0.0;      // -100 to 100, plumbed only, no pattern acts on it yet
-bool rotationOverdrive = false;
+float rotationSensation = 0.0;      // -100 to 100
+float rotationBurst = 100.0f;       // burst speed, percent of the dial cap
+const float ROT_BURST_MIN = 10.0f;  // a burst phase that spins slower than this would just look stalled
 int currentCombo = -1;              // -1 = none/custom
 
 // Tweak screen. The mainboard is the source of truth (echoed at pairing); these are only the
-// remote's copy. The defaults and ranges below must match OSSM_Config.h and the slider ranges in ui.c.
-float tweakBurstRpm = 120.0f;       // burst ceiling in RPM at full dial (overdrive on)
-float tweakDialRpm = 100.0f;        // RPM that 100% on the rotation speed dial means
-float tweakSpare = 0.0f;            // reserved, no effect yet
-const float TWEAK_BURST_DEFAULT = 120.0f;   // = ROTATION_BURST_RPM
+// remote's copy. The defaults and ranges below must match OSSM_Config.h and the slider range in ui.c.
+float tweakDialRpm = 100.0f;        // HARD RPM cap; 100% on the rotation speed dial means this
+bool tweakReverse = false;          // flips the whole rotation axis on top of the board's compile-time setting
 const float TWEAK_DIAL_DEFAULT = 100.0f;    // = ROTATION_MAX_RPM
-const float TWEAK_SPARE_DEFAULT = 0.0f;
-const float TWEAK_BURST_MIN = 50.0f;
 const float TWEAK_DIAL_MIN = 20.0f;
 const float TWEAK_RPM_MAX = 300.0f;         // generous on purpose while testing, tighten later
 
@@ -167,6 +164,7 @@ const float HOME_STROKE = 0.0f;
 const float HOME_SENS = 60.0f;
 const float HOME_ROT_SPEED = 0.0f;
 const float HOME_ROT_SENS = 60.0f;
+const float HOME_ROT_BURST = 100.0f;
 char patternstr[20];
 bool onoff = false;
 
@@ -254,11 +252,11 @@ typedef struct struct_message {
   float esp_rotation_pattern;
   float esp_rotation_direction;   // 0.0 = forward, non-zero = reverse (must match mainboard)
   float esp_rotation_sensation;   // -100 to 100 (must match mainboard)
-  float esp_rotation_overdrive;   // 0.0 = off (must match mainboard)
+  float esp_rotation_burst;       // burst speed, percent of the dial cap (must match mainboard)
   float esp_combo;                // active combo index, -1 = none (must match mainboard)
-  float esp_tweak_burst;          // burst ceiling RPM (must match mainboard)
-  float esp_tweak_dial;           // dial max RPM (must match mainboard)
-  float esp_tweak_spare;          // reserved (must match mainboard)
+  float esp_tweak_burst;          // retired, always 0 (keeps the struct layout identical on both sides)
+  float esp_tweak_dial;           // dial cap RPM (must match mainboard)
+  float esp_tweak_reverse;        // 0.0 = as configured, non-zero = axis direction flipped (must match mainboard)
 } struct_message;
 
 bool Ossm_paired = false;
@@ -414,11 +412,11 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
     rotationPattern = (int)incomingcontrol.esp_rotation_pattern;
     rotationDirection = (incomingcontrol.esp_rotation_direction != 0.0f);
     rotationSensation = incomingcontrol.esp_rotation_sensation;
-    rotationOverdrive = (incomingcontrol.esp_rotation_overdrive != 0.0f);
+    rotationBurst = incomingcontrol.esp_rotation_burst;
+    if (rotationBurst < ROT_BURST_MIN || rotationBurst > 100.0f) rotationBurst = 100.0f;   // 0 from an older board = default
     currentCombo = (int)incomingcontrol.esp_combo;
-    if (incomingcontrol.esp_tweak_burst > 0.0f) tweakBurstRpm = incomingcontrol.esp_tweak_burst;
     if (incomingcontrol.esp_tweak_dial > 0.0f) tweakDialRpm = incomingcontrol.esp_tweak_dial;
-    tweakSpare = incomingcontrol.esp_tweak_spare;
+    tweakReverse = (incomingcontrol.esp_tweak_reverse != 0.0f);
     outgoingcontrol.esp_target = OSSM_ID;
     
     result = esp_now_send(OSSM_Address, (uint8_t *) &outgoingcontrol, sizeof(outgoingcontrol));
@@ -482,10 +480,9 @@ void rotationStop()                  { SendCommand(ROT_OFF, 0.0, OSSM_ID); Rotat
 void rotationSetSpeed(float percent) { SendCommand(ROT_SPEED, percent, OSSM_ID); }
 void rotationSetPattern(int index)   { SendCommand(ROT_PATTERN, (float)index, OSSM_ID); }
 void rotationSetSensation(float pct) { SendCommand(ROT_SENS, pct, OSSM_ID); }
-void rotationSetOverdrive(bool on)   { SendCommand(ROT_OVERDRIVE, on ? 1.0 : 0.0, OSSM_ID); }
-void tweakSetBurst(float rpm)        { SendCommand(TWEAK_BURST, rpm, OSSM_ID); }
+void rotationSetBurst(float pct)     { SendCommand(ROT_BURST, pct, OSSM_ID); }
 void tweakSetDial(float rpm)         { SendCommand(TWEAK_DIAL, rpm, OSSM_ID); }
-void tweakSetSpare(float value)      { SendCommand(TWEAK_SPARE, value, OSSM_ID); }
+void tweakSetReverse(bool on)        { SendCommand(TWEAK_REVERSE, on ? 1.0f : 0.0f, OSSM_ID); }
 
 // Full pattern names, in table order (must match the mainboard's pattern tables).
 // The Select rollers show abbreviated names; labels elsewhere use these.
@@ -495,24 +492,36 @@ const char* const strokeNames[] = {
 };
 const int strokeNameCount = sizeof(strokeNames) / sizeof(strokeNames[0]);
 
+// Same order as rotationPatternTable[] on the mainboard (lib/RotationEngine/src/RotationPattern.h).
+// 16 entries: "Random Direction Bursts" was merged into Random Bursts and no longer exists there.
 const char* const rotationNames[] = {
   "Steady", "Sweep", "Escalation", "Random Bursts", "Screw Sync", "Stutter Sync",
   "Bottom Hold Sync", "Depth Surge", "Threshold Burst", "Tempo Match", "Snap Reverse",
-  "Alternating Sweep", "Random Direction Bursts", "Metronome Flip", "Drunken Walk",
+  "Alternating Sweep", "Metronome Flip", "Drunken Walk",
   "Escalating Reversal", "Depth Trigger Spin"
 };
 const int rotationNameCount = sizeof(rotationNames) / sizeof(rotationNames[0]);
+
+// Roller option strings, in the same order as the name tables above. The generated ui.c still holds an
+// older copy of these; patchUi() replaces them at startup. Abbreviated so they fit the roller width.
+static const char* const COMBO_ROLLER_OPTIONS =
+  "Custom\nLocked in\nLayers\nDepth aware\nTempo aware\nClimax\nChaos\nClimb";
+static const char* const ROTATION_ROLLER_OPTIONS =
+  "Steady\nSweep\nEscalation\nRand Bursts\nScrew Sync\nStutter Sync\n"
+  "Bottom Hold\nDepth Surge\nThresh Burst\nTempo Match\nSnap Reverse\n"
+  "Alt Sweep\nMetronome\nDrunken Walk\nEsc Reversal\nTrigger Spin";
 
 // Combo mirror of the mainboard comboTable (same order, same speeds). The mainboard is
 // the source of truth; this only lets the remote move the rollers and show names.
 struct ComboUI { const char* stroke; const char* rotation; float speed; };
 const ComboUI comboUI[] = {
-  { "Teasing or Pounding", "Screw Sync",              50.0f },
-  { "Deeper",              "Sweep",                   50.0f },
-  { "Simple Stroke",       "Depth Surge",             50.0f },
-  { "Robo Stroke",         "Tempo Match",             50.0f },
-  { "Depth Pulse",         "Depth Trigger Spin",      50.0f },
-  { "Insist",              "Random Direction Bursts", 50.0f }
+  { "Teasing or Pounding", "Screw Sync",          50.0f },
+  { "Deeper",              "Alternating Sweep",   50.0f },
+  { "Simple Stroke",       "Depth Surge",         50.0f },
+  { "Half'n'Half",         "Tempo Match",         50.0f },
+  { "Depth Pulse",         "Depth Trigger Spin",  50.0f },
+  { "Insist",              "Random Bursts",       50.0f },
+  { "Deeper",              "Threshold Burst",     50.0f }
 };
 const int comboUICount = sizeof(comboUI) / sizeof(comboUI[0]);
 
@@ -521,6 +530,90 @@ int nameIndex(const char* const* names, int count, const char* name) {
     if (strcmp(names[i], name) == 0) return i;
   }
   return 0;
+}
+
+// ---- Runtime UI patch ------------------------------------------------------
+// The screens come from the generated ui.c. Rather than hand-edit that file, patchUi() (called once after
+// ui_init()) adjusts them here: Rotation gets a Burst slider in place of the Overdrive checkbox, Tweak loses
+// the Burst and Spare rows and gains a Reverse checkbox, and the Select rollers get the current pattern lists.
+// If ui.c is ever regenerated from SquareLine, this keeps working as long as the widget names stay the same.
+static lv_obj_t * ui_rotationburstrow;
+static lv_obj_t * ui_rotationburstslider;
+static lv_obj_t * ui_rotationburstvalue;
+static lv_obj_t * ui_tweakreversecheck;
+
+static void makeSliderRow(lv_obj_t * parent, lv_obj_t ** row, lv_obj_t ** slider, lv_obj_t ** value,
+                          const char * text, int y, int minv, int maxv)
+{
+  *row = lv_label_create(parent);
+  lv_obj_set_width(*row, lv_pct(95));
+  lv_obj_set_height(*row, LV_SIZE_CONTENT);
+  lv_obj_set_x(*row, 0);
+  lv_obj_set_y(*row, y);
+  lv_obj_set_align(*row, LV_ALIGN_CENTER);
+  lv_label_set_text(*row, text);
+  lv_obj_set_style_text_font(*row, &lv_font_montserrat_20, LV_PART_MAIN | LV_STATE_DEFAULT);
+
+  *slider = lv_slider_create(*row);
+  lv_slider_set_range(*slider, minv, maxv);
+  lv_obj_set_width(*slider, 130);
+  lv_obj_set_height(*slider, 10);
+  lv_obj_set_x(*slider, -15);
+  lv_obj_set_y(*slider, 0);
+  lv_obj_set_align(*slider, LV_ALIGN_RIGHT_MID);
+  lv_obj_set_style_bg_color(*slider, lv_color_hex(0xD691D0), LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_opa(*slider, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_color(*slider, lv_color_hex(0x83277B), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_opa(*slider, 255, LV_PART_INDICATOR | LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_grad_color(*slider, lv_color_hex(0x83277B), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_color(*slider, lv_color_hex(0x83277B), LV_PART_KNOB | LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_opa(*slider, 255, LV_PART_KNOB | LV_STATE_DEFAULT);
+
+  *value = lv_label_create(*row);
+  lv_obj_set_width(*value, LV_SIZE_CONTENT);
+  lv_obj_set_height(*value, LV_SIZE_CONTENT);
+  lv_obj_set_x(*value, 80);
+  lv_obj_set_y(*value, 0);
+  lv_obj_set_align(*value, LV_ALIGN_LEFT_MID);
+  lv_label_set_text(*value, "");
+}
+
+// Touch on the Tweak Reverse checkbox (the encoder path sends from loop()).
+static void tweakreverseevent(lv_event_t * e)
+{
+  if (lv_event_get_code(e) == LV_EVENT_VALUE_CHANGED) {
+    tweakReverse = lv_obj_has_state(ui_tweakreversecheck, LV_STATE_CHECKED);
+    tweakSetReverse(tweakReverse);
+  }
+}
+
+static void patchUi()
+{
+  // Rotation screen: Burst slider takes the place of the Overdrive checkbox.
+  lv_obj_add_flag(ui_rotationoverdrive, LV_OBJ_FLAG_HIDDEN);
+  makeSliderRow(ui_Rotation, &ui_rotationburstrow, &ui_rotationburstslider, &ui_rotationburstvalue,
+                "Burst:", 8, (int)ROT_BURST_MIN, 100);
+
+  // Tweak screen: the dial row moves up into the first slot, Burst and Spare rows go, Reverse checkbox comes in.
+  lv_obj_add_flag(ui_TweakBurstL, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_add_flag(ui_TweakSpareL, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_set_y(ui_TweakDialL, -48);
+
+  ui_tweakreversecheck = lv_checkbox_create(ui_Tweak);
+  lv_checkbox_set_text(ui_tweakreversecheck, "Reverse");
+  lv_obj_set_width(ui_tweakreversecheck, LV_SIZE_CONTENT);
+  lv_obj_set_height(ui_tweakreversecheck, LV_SIZE_CONTENT);
+  lv_obj_set_x(ui_tweakreversecheck, 0);
+  lv_obj_set_y(ui_tweakreversecheck, -8);
+  lv_obj_set_align(ui_tweakreversecheck, LV_ALIGN_CENTER);
+  lv_obj_set_style_text_font(ui_tweakreversecheck, &lv_font_montserrat_16, LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_border_color(ui_tweakreversecheck, lv_color_hex(0x83247B), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+  lv_obj_set_style_border_opa(ui_tweakreversecheck, 255, LV_PART_INDICATOR | LV_STATE_DEFAULT);
+  lv_obj_add_event_cb(ui_tweakreversecheck, tweakreverseevent, LV_EVENT_VALUE_CHANGED, NULL);
+
+  // Select rollers: pattern lists in the mainboard's order (see the name tables above).
+  lv_roller_set_options(ui_ComboS, COMBO_ROLLER_OPTIONS, LV_ROLLER_MODE_NORMAL);
+  lv_roller_set_options(ui_SelectRotationS, ROTATION_ROLLER_OPTIONS, LV_ROLLER_MODE_NORMAL);
 }
 
 // Bench test: type a command in the Serial Monitor and press Enter
@@ -595,9 +688,8 @@ extern "C" void rotationreversetoggle(lv_event_t * e){
   saverotationdirection(e);
 }
 
+// The Overdrive checkbox is hidden by patchUi() (replaced by the Burst slider); ui.c still links to this callback.
 extern "C" void saverotationoverdrive(lv_event_t * e){
-  rotationOverdrive = lv_obj_has_state(ui_rotationoverdrive, LV_STATE_CHECKED);
-  rotationSetOverdrive(rotationOverdrive);
 }
 
 void saverotationdirection(lv_event_t * e){
@@ -623,24 +715,21 @@ void resetStrokeTune(){
   SendCommand(SENSATION, sensation, OSSM_ID);
 }
 
-// L double click on Rotation tune: speed, sensation and overdrive back to home. Reverse and running state are untouched.
+// L double click on Rotation tune: speed, sensation and burst back to home. Reverse and running state are untouched.
 void resetRotationTune(){
   rotationSpeed = HOME_ROT_SPEED;
   rotationSensation = HOME_ROT_SENS;
-  rotationOverdrive = false;
+  rotationBurst = HOME_ROT_BURST;
   rotationSetSpeed(rotationSpeed);
   rotationSetSensation(rotationSensation);
-  rotationSetOverdrive(false);
+  rotationSetBurst(rotationBurst);
 }
 
-// L double click on Tweak: back to the OSSM_Config.h defaults.
+// L double click on Tweak: dial cap back to the OSSM_Config.h default. Reverse is deliberately left alone:
+// it describes how the hardware is built (which way is screwing in), not a setting to reset.
 void resetTweak(){
   tweakDialRpm = TWEAK_DIAL_DEFAULT;
-  tweakBurstRpm = TWEAK_BURST_DEFAULT;
-  tweakSpare = TWEAK_SPARE_DEFAULT;
   tweakSetDial(tweakDialRpm);
-  tweakSetBurst(tweakBurstRpm);
-  tweakSetSpare(tweakSpare);
 }
 
 // M hold on any screen: stop both axes first, then put every tune slider back to home.
@@ -771,12 +860,8 @@ void screenmachine(lv_event_t * e)
     st_screens = ST_UI_ROTATION;
     lv_slider_set_value(ui_rotationspeedslider, (int)rotationSpeed, LV_ANIM_OFF);
     lv_slider_set_value(ui_rotationsensslider, (int)rotationSensation, LV_ANIM_OFF);
+    lv_slider_set_value(ui_rotationburstslider, (int)rotationBurst, LV_ANIM_OFF);
     lv_label_set_text(ui_RotationPatternTitle, rotationNames[constrain(rotationPattern, 0, rotationNameCount - 1)]);
-    if (rotationOverdrive) {
-      lv_obj_add_state(ui_rotationoverdrive, LV_STATE_CHECKED);
-    } else {
-      lv_obj_clear_state(ui_rotationoverdrive, LV_STATE_CHECKED);
-    }
     if (rotationDirection) {
       lv_obj_add_state(ui_rotationdirection, LV_STATE_CHECKED);
     } else {
@@ -789,9 +874,12 @@ void screenmachine(lv_event_t * e)
 
   } else if (lv_scr_act() == ui_Tweak){
     st_screens = ST_UI_TWEAK;
-    lv_slider_set_value(ui_tweakburstslider, (int)tweakBurstRpm, LV_ANIM_OFF);
     lv_slider_set_value(ui_tweakdialslider, (int)tweakDialRpm, LV_ANIM_OFF);
-    lv_slider_set_value(ui_tweakspareslider, (int)tweakSpare, LV_ANIM_OFF);
+    if (tweakReverse) {
+      lv_obj_add_state(ui_tweakreversecheck, LV_STATE_CHECKED);
+    } else {
+      lv_obj_clear_state(ui_tweakreversecheck, LV_STATE_CHECKED);
+    }
     encoder1.setCount(0);
     encoder2.setCount(0);
     encoder3.setCount(0);
@@ -927,6 +1015,7 @@ void setup(){
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(indev, my_touchpad_read);
   ui_init();  
+  patchUi();   // Burst slider, Tweak Reverse checkbox, pattern lists (see the note above patchUi())
 
   if(eject_status == true){
   lv_obj_add_state(ui_ejectaddon, LV_STATE_CHECKED);
@@ -1441,7 +1530,7 @@ void loop()
         lv_label_set_text(ui_rotationspeedvalue, rotationspeed_v);
 
         //
-        // Encoder 2 - Rotation sensation, -100 to 100 (plumbed only, no pattern acts on it yet)
+        // Encoder 2 - Rotation sensation, -100 to 100
         //
         if(lv_slider_is_dragged(ui_rotationsensslider) == false){
           changed = false;
@@ -1508,28 +1597,31 @@ void loop()
         }
 
         //
-        // Encoder 4 - Overdrive: turn right = on, turn left = off
+        // Encoder 4 - Burst speed, percent of the dial cap, 5 per detent
         //
         {
-          bool newOverdrive = rotationOverdrive;
-          if (encoder4.getCount() >= encoder4_enc + 2){
-            newOverdrive = true;
-            encoder4_enc = encoder4.getCount();
-          } else if (encoder4.getCount() <= encoder4_enc - 2){
-            newOverdrive = false;
-            encoder4_enc = encoder4.getCount();
-          }
-          if (newOverdrive != rotationOverdrive){
-            rotationOverdrive = newOverdrive;
-            rotationSetOverdrive(rotationOverdrive);
-          }
-          if (lv_obj_has_state(ui_rotationoverdrive, LV_STATE_CHECKED) != rotationOverdrive){
-            if (rotationOverdrive) {
-              lv_obj_add_state(ui_rotationoverdrive, LV_STATE_CHECKED);
-            } else {
-              lv_obj_clear_state(ui_rotationoverdrive, LV_STATE_CHECKED);
+          bool burstChanged = false;
+          if(lv_slider_is_dragged(ui_rotationburstslider) == false){
+            if (encoder4.getCount() >= encoder4_enc + 2){
+              rotationBurst += 5.0f; burstChanged = true;
+              encoder4_enc = encoder4.getCount();
+            } else if (encoder4.getCount() <= encoder4_enc - 2){
+              rotationBurst -= 5.0f; burstChanged = true;
+              encoder4_enc = encoder4.getCount();
             }
+          } else if (lv_slider_get_value(ui_rotationburstslider) != (int)rotationBurst){
+            rotationBurst = lv_slider_get_value(ui_rotationburstslider); burstChanged = true;
           }
+          rotationBurst = constrain(rotationBurst, ROT_BURST_MIN, 100.0f);
+          if (burstChanged) {
+            rotationSetBurst(rotationBurst);
+          }
+          if(lv_slider_is_dragged(ui_rotationburstslider) == false){
+            lv_slider_set_value(ui_rotationburstslider, (int)rotationBurst, LV_ANIM_OFF);
+          }
+          char burst_v[12];
+          snprintf(burst_v, sizeof(burst_v), "%d%%", (int)rotationBurst);
+          lv_label_set_text(ui_rotationburstvalue, burst_v);
         }
 
         // M button shows what a press will do
@@ -1555,81 +1647,61 @@ void loop()
           touch_disabled = true;
         }
 
-        bool burstChanged = false;
         bool dialChanged = false;
-        bool spareChanged = false;
 
-        // E1 burst ceiling (RPM), 5 per detent, or drag the slider
-        if(lv_slider_is_dragged(ui_tweakburstslider) == false){
-          if (encoder1.getCount() >= 2){
-            tweakBurstRpm += 5.0f; burstChanged = true; encoder1.setCount(0);
-          } else if (encoder1.getCount() <= -2){
-            tweakBurstRpm -= 5.0f; burstChanged = true; encoder1.setCount(0);
-          }
-        } else if (lv_slider_get_value(ui_tweakburstslider) != (int)tweakBurstRpm){
-          tweakBurstRpm = lv_slider_get_value(ui_tweakburstslider); burstChanged = true;
-        }
-
-        // E2 dial max (RPM)
+        // E1 dial cap (RPM), 5 per detent, or drag the slider. This is the HARD cap on rotation speed.
         if(lv_slider_is_dragged(ui_tweakdialslider) == false){
-          if (encoder2.getCount() >= 2){
-            tweakDialRpm += 5.0f; dialChanged = true; encoder2.setCount(0);
-          } else if (encoder2.getCount() <= -2){
-            tweakDialRpm -= 5.0f; dialChanged = true; encoder2.setCount(0);
+          if (encoder1.getCount() >= 2){
+            tweakDialRpm += 5.0f; dialChanged = true; encoder1.setCount(0);
+          } else if (encoder1.getCount() <= -2){
+            tweakDialRpm -= 5.0f; dialChanged = true; encoder1.setCount(0);
           }
         } else if (lv_slider_get_value(ui_tweakdialslider) != (int)tweakDialRpm){
           tweakDialRpm = lv_slider_get_value(ui_tweakdialslider); dialChanged = true;
         }
 
-        // E3 spare (0-100), no effect yet
-        if(lv_slider_is_dragged(ui_tweakspareslider) == false){
-          if (encoder3.getCount() >= 2){
-            tweakSpare += 5.0f; spareChanged = true; encoder3.setCount(0);
-          } else if (encoder3.getCount() <= -2){
-            tweakSpare -= 5.0f; spareChanged = true; encoder3.setCount(0);
-          }
-        } else if (lv_slider_get_value(ui_tweakspareslider) != (int)tweakSpare){
-          tweakSpare = lv_slider_get_value(ui_tweakspareslider); spareChanged = true;
-        }
-
         tweakDialRpm = constrain(tweakDialRpm, TWEAK_DIAL_MIN, TWEAK_RPM_MAX);
-        tweakBurstRpm = constrain(tweakBurstRpm, TWEAK_BURST_MIN, TWEAK_RPM_MAX);
-        tweakSpare = constrain(tweakSpare, 0.0f, 100.0f);
-        if (tweakBurstRpm < tweakDialRpm){      // the burst ceiling can never sit below the dial max
-          tweakBurstRpm = tweakDialRpm;
-          burstChanged = true;
-        }
+        if (dialChanged) tweakSetDial(tweakDialRpm);
 
-        if (dialChanged)  tweakSetDial(tweakDialRpm);
-        if (burstChanged) tweakSetBurst(tweakBurstRpm);
-        if (spareChanged) tweakSetSpare(tweakSpare);
-
-        if(lv_slider_is_dragged(ui_tweakburstslider) == false){
-          lv_slider_set_value(ui_tweakburstslider, (int)tweakBurstRpm, LV_ANIM_OFF);
-        }
         if(lv_slider_is_dragged(ui_tweakdialslider) == false){
           lv_slider_set_value(ui_tweakdialslider, (int)tweakDialRpm, LV_ANIM_OFF);
         }
-        if(lv_slider_is_dragged(ui_tweakspareslider) == false){
-          lv_slider_set_value(ui_tweakspareslider, (int)tweakSpare, LV_ANIM_OFF);
+
+        // E3 Reverse (whole axis): turn right = on, turn left = off
+        {
+          bool newTweakReverse = tweakReverse;
+          if (encoder3.getCount() >= 2){
+            newTweakReverse = true;
+            encoder3.setCount(0);
+          } else if (encoder3.getCount() <= -2){
+            newTweakReverse = false;
+            encoder3.setCount(0);
+          }
+          if (newTweakReverse != tweakReverse){
+            tweakReverse = newTweakReverse;
+            tweakSetReverse(tweakReverse);
+          }
+          if (lv_obj_has_state(ui_tweakreversecheck, LV_STATE_CHECKED) != tweakReverse){
+            if (tweakReverse) {
+              lv_obj_add_state(ui_tweakreversecheck, LV_STATE_CHECKED);
+            } else {
+              lv_obj_clear_state(ui_tweakreversecheck, LV_STATE_CHECKED);
+            }
+          }
         }
 
         char tweak_v[16];
-        snprintf(tweak_v, sizeof(tweak_v), "%d rpm", (int)tweakBurstRpm);
-        lv_label_set_text(ui_tweakburstvalue, tweak_v);
         snprintf(tweak_v, sizeof(tweak_v), "%d rpm", (int)tweakDialRpm);
         lv_label_set_text(ui_tweakdialvalue, tweak_v);
-        snprintf(tweak_v, sizeof(tweak_v), "%d", (int)tweakSpare);
-        lv_label_set_text(ui_tweakparevalue, tweak_v);
-        char factor_v[40];
-        snprintf(factor_v, sizeof(factor_v), "Burst factor %.2fx", tweakBurstRpm / tweakDialRpm);
-        lv_label_set_text(ui_tweakfactorlabel, factor_v);
+        char cap_v[40];
+        snprintf(cap_v, sizeof(cap_v), "Rotation dial 100%% = %d rpm", (int)tweakDialRpm);
+        lv_label_set_text(ui_tweakfactorlabel, cap_v);
 
         // M button shows what a press will do (rotation only, so you can tune while it spins)
         lv_label_set_text(ui_TweakButtonMText, RotationOn ? "Stop" : "Start");
 
         if(click2_double_waspressed == true){
-         resetTweak();                                                            // L double -> defaults
+         resetTweak();                                                            // L double -> dial cap to default
         } else if(click2_short_waspressed == true){
          lv_obj_send_event(ui_TweakButtonL, LV_EVENT_CLICKED, NULL);              // L click -> Menu
         } else if(mxclick_short_waspressed == true){
