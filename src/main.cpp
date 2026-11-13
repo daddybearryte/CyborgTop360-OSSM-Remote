@@ -488,7 +488,7 @@ void tweakSetReverse(bool on)        { SendCommand(TWEAK_REVERSE, on ? 1.0f : 0.
 // The Select rollers show abbreviated names; labels elsewhere use these.
 const char* const strokeNames[] = {
   "Simple Stroke", "Teasing or Pounding", "Robo Stroke", "Half'n'Half", "Deeper",
-  "Stop'n'Go", "Insist", "Jack Hammer", "Stroke Nibbler", "Depth Pulse"
+  "Stop'n'Go", "Insist", "Jack Hammer", "Stroke Nibbler", "Depth Pulse", "Burst Pull-out"
 };
 const int strokeNameCount = sizeof(strokeNames) / sizeof(strokeNames[0]);
 
@@ -614,6 +614,16 @@ static void patchUi()
   // Select rollers: pattern lists in the mainboard's order (see the name tables above).
   lv_roller_set_options(ui_ComboS, COMBO_ROLLER_OPTIONS, LV_ROLLER_MODE_NORMAL);
   lv_roller_set_options(ui_SelectRotationS, ROTATION_ROLLER_OPTIONS, LV_ROLLER_MODE_NORMAL);
+
+  // Stroke roller: keep the generated list and add the newest pattern at the end (its index has to match the
+  // mainboard's patternTable[]). Only done when the roller holds exactly one entry fewer than strokeNames.
+  if (lv_roller_get_option_count(ui_PatternS) == (uint32_t)(strokeNameCount - 1)) {
+    char strokeOptions[256];
+    snprintf(strokeOptions, sizeof(strokeOptions), "%s\nBurst Pull", lv_roller_get_options(ui_PatternS));
+    lv_roller_set_options(ui_PatternS, strokeOptions, LV_ROLLER_MODE_NORMAL);
+  } else {
+    LogDebug("Stroke roller option count is not what patchUi expects, Burst Pull-out was not added");
+  }
 }
 
 // Bench test: type a command in the Serial Monitor and press Enter
