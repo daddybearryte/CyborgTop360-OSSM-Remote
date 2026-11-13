@@ -126,6 +126,9 @@ bool touch_disabled = false;
 // 38 retired (was TWEAK_BURST)
 #define TWEAK_DIAL 39      // must match mainboard: dial cap in RPM, hard ceiling
 #define TWEAK_REVERSE 40   // must match mainboard: flips the whole rotation axis direction (was TWEAK_SPARE)
+// 41 = RETRACT on the mainboard, unused here
+#define TWEAK_BURST_COUNT 42   // must match mainboard: Burst Pull-out strokes per run
+#define TWEAK_PULL_SCALE 43    // must match mainboard: Burst Pull-out slowdown scale, percent
 
 #define CONNECT 88
 #define HEARTBEAT 99
@@ -156,6 +159,16 @@ bool tweakReverse = false;          // flips the whole rotation axis on top of t
 const float TWEAK_DIAL_DEFAULT = 100.0f;    // = ROTATION_MAX_RPM
 const float TWEAK_DIAL_MIN = 20.0f;
 const float TWEAK_RPM_MAX = 300.0f;         // generous on purpose while testing, tighten later
+
+// Burst Pull-out (stroke pattern) tuning, also on the Tweak screen. Ranges must match the board (main.cpp, BurstTuning.h).
+int tweakBurstCount = 5;                    // fast strokes per run, the last one ends in the slow pull-out
+float tweakPullPct = 100.0f;                // scales the whole pull-out slowdown range (100% = 2x to 10x)
+const int TWEAK_COUNT_DEFAULT = 5;
+const int TWEAK_COUNT_MIN = 1;
+const int TWEAK_COUNT_MAX = 12;
+const float TWEAK_PULL_DEFAULT = 100.0f;
+const float TWEAK_PULL_MIN = 50.0f;
+const float TWEAK_PULL_MAX = 200.0f;
 
 // Home positions: where L double click (one screen) and M hold (everything) put the sliders.
 const float HOME_SPEED = 0.0f;
@@ -257,6 +270,8 @@ typedef struct struct_message {
   float esp_tweak_burst;          // retired, always 0 (keeps the struct layout identical on both sides)
   float esp_tweak_dial;           // dial cap RPM (must match mainboard)
   float esp_tweak_reverse;        // 0.0 = as configured, non-zero = axis direction flipped (must match mainboard)
+  float esp_tweak_burst_count;    // Burst Pull-out strokes per run (must match mainboard)
+  float esp_tweak_pull_scale;     // Burst Pull-out slowdown scale, percent (must match mainboard)
 } struct_message;
 
 bool Ossm_paired = false;
@@ -417,6 +432,8 @@ void OnDataRecv(const uint8_t * mac, const uint8_t *incomingData, int len) {
     currentCombo = (int)incomingcontrol.esp_combo;
     if (incomingcontrol.esp_tweak_dial > 0.0f) tweakDialRpm = incomingcontrol.esp_tweak_dial;
     tweakReverse = (incomingcontrol.esp_tweak_reverse != 0.0f);
+    if (incomingcontrol.esp_tweak_burst_count >= 1.0f) tweakBurstCount = constrain((int)(incomingcontrol.esp_tweak_burst_count + 0.5f), TWEAK_COUNT_MIN, TWEAK_COUNT_MAX);   // 0 from an older board = keep default
+    if (incomingcontrol.esp_tweak_pull_scale > 0.0f) tweakPullPct = constrain(incomingcontrol.esp_tweak_pull_scale, TWEAK_PULL_MIN, TWEAK_PULL_MAX);
     outgoingcontrol.esp_target = OSSM_ID;
     
     result = esp_now_send(OSSM_Address, (uint8_t *) &outgoingcontrol, sizeof(outgoingcontrol));
@@ -483,6 +500,8 @@ void rotationSetSensation(float pct) { SendCommand(ROT_SENS, pct, OSSM_ID); }
 void rotationSetBurst(float pct)     { SendCommand(ROT_BURST, pct, OSSM_ID); }
 void tweakSetDial(float rpm)         { SendCommand(TWEAK_DIAL, rpm, OSSM_ID); }
 void tweakSetReverse(bool on)        { SendCommand(TWEAK_REVERSE, on ? 1.0f : 0.0f, OSSM_ID); }
+void tweakSetBurstCount(int count)   { SendCommand(TWEAK_BURST_COUNT, (float)count, OSSM_ID); }
+void tweakSetPullScale(float pct)    { SendCommand(TWEAK_PULL_SCALE, pct, OSSM_ID); }
 
 // Full pattern names, in table order (must match the mainboard's pattern tables).
 // The Select rollers show abbreviated names; labels elsewhere use these.
@@ -535,12 +554,19 @@ int nameIndex(const char* const* names, int count, const char* name) {
 // ---- Runtime UI patch ------------------------------------------------------
 // The screens come from the generated ui.c. Rather than hand-edit that file, patchUi() (called once after
 // ui_init()) adjusts them here: Rotation gets a Burst slider in place of the Overdrive checkbox, Tweak loses
-// the Burst and Spare rows and gains a Reverse checkbox, and the Select rollers get the current pattern lists.
+// the Burst and Spare rows and gains a Reverse checkbox plus the Burst Pull-out Count and Pull-out rows,
+// and the Select rollers get the current pattern lists.
 // If ui.c is ever regenerated from SquareLine, this keeps working as long as the widget names stay the same.
 static lv_obj_t * ui_rotationburstrow;
 static lv_obj_t * ui_rotationburstslider;
 static lv_obj_t * ui_rotationburstvalue;
 static lv_obj_t * ui_tweakreversecheck;
+static lv_obj_t * ui_tweakcountrow;
+static lv_obj_t * ui_tweakcountslider;
+static lv_obj_t * ui_tweakcountvalue;
+static lv_obj_t * ui_tweakpullrow;
+static lv_obj_t * ui_tweakpullslider;
+static lv_obj_t * ui_tweakpullvalue;
 
 static void makeSliderRow(lv_obj_t * parent, lv_obj_t ** row, lv_obj_t ** slider, lv_obj_t ** value,
                           const char * text, int y, int minv, int maxv)
@@ -595,6 +621,13 @@ static void patchUi()
                 "Burst:", 8, (int)ROT_BURST_MIN, 100);
 
   // Tweak screen: the dial row moves up into the first slot, Burst and Spare rows go, Reverse checkbox comes in.
+  // The two Burst Pull-out rows (Count, Pull-out) go where the hidden Burst and Spare rows were, as long as that is clear of the
+  // Dial (-48) and Reverse (-8) rows; otherwise they fall back to fixed slots below them. Check this on the device.
+  int yCount = lv_obj_get_style_y(ui_TweakBurstL, LV_PART_MAIN);
+  int yPull = lv_obj_get_style_y(ui_TweakSpareL, LV_PART_MAIN);
+  if (yCount > yPull) { int t = yCount; yCount = yPull; yPull = t; }
+  if (yCount <= -8 || yCount == yPull) { yCount = 32; yPull = 72; }
+
   lv_obj_add_flag(ui_TweakBurstL, LV_OBJ_FLAG_HIDDEN);
   lv_obj_add_flag(ui_TweakSpareL, LV_OBJ_FLAG_HIDDEN);
   lv_obj_set_y(ui_TweakDialL, -48);
@@ -610,6 +643,12 @@ static void patchUi()
   lv_obj_set_style_border_color(ui_tweakreversecheck, lv_color_hex(0x83247B), LV_PART_INDICATOR | LV_STATE_DEFAULT);
   lv_obj_set_style_border_opa(ui_tweakreversecheck, 255, LV_PART_INDICATOR | LV_STATE_DEFAULT);
   lv_obj_add_event_cb(ui_tweakreversecheck, tweakreverseevent, LV_EVENT_VALUE_CHANGED, NULL);
+
+  // Burst Pull-out: strokes per run, and the pull-out slowdown range scale (both sliders also answer to the encoders in loop()).
+  makeSliderRow(ui_Tweak, &ui_tweakcountrow, &ui_tweakcountslider, &ui_tweakcountvalue,
+                "Count:", yCount, TWEAK_COUNT_MIN, TWEAK_COUNT_MAX);
+  makeSliderRow(ui_Tweak, &ui_tweakpullrow, &ui_tweakpullslider, &ui_tweakpullvalue,
+                "Pull:", yPull, (int)TWEAK_PULL_MIN, (int)TWEAK_PULL_MAX);
 
   // Select rollers: pattern lists in the mainboard's order (see the name tables above).
   lv_roller_set_options(ui_ComboS, COMBO_ROLLER_OPTIONS, LV_ROLLER_MODE_NORMAL);
@@ -735,11 +774,15 @@ void resetRotationTune(){
   rotationSetBurst(rotationBurst);
 }
 
-// L double click on Tweak: dial cap back to the OSSM_Config.h default. Reverse is deliberately left alone:
-// it describes how the hardware is built (which way is screwing in), not a setting to reset.
+// L double click on Tweak: dial cap, Burst Pull-out count and Pull-out scale back to their defaults. Reverse is deliberately
+// left alone: it describes how the hardware is built (which way is screwing in), not a setting to reset.
 void resetTweak(){
   tweakDialRpm = TWEAK_DIAL_DEFAULT;
   tweakSetDial(tweakDialRpm);
+  tweakBurstCount = TWEAK_COUNT_DEFAULT;
+  tweakSetBurstCount(tweakBurstCount);
+  tweakPullPct = TWEAK_PULL_DEFAULT;
+  tweakSetPullScale(tweakPullPct);
 }
 
 // M hold on any screen: stop both axes first, then put every tune slider back to home.
@@ -885,6 +928,8 @@ void screenmachine(lv_event_t * e)
   } else if (lv_scr_act() == ui_Tweak){
     st_screens = ST_UI_TWEAK;
     lv_slider_set_value(ui_tweakdialslider, (int)tweakDialRpm, LV_ANIM_OFF);
+    lv_slider_set_value(ui_tweakcountslider, tweakBurstCount, LV_ANIM_OFF);
+    lv_slider_set_value(ui_tweakpullslider, (int)tweakPullPct, LV_ANIM_OFF);
     if (tweakReverse) {
       lv_obj_add_state(ui_tweakreversecheck, LV_STATE_CHECKED);
     } else {
@@ -1025,7 +1070,7 @@ void setup(){
   lv_indev_set_type(indev, LV_INDEV_TYPE_POINTER);
   lv_indev_set_read_cb(indev, my_touchpad_read);
   ui_init();  
-  patchUi();   // Burst slider, Tweak Reverse checkbox, pattern lists (see the note above patchUi())
+  patchUi();   // Burst slider, Tweak Reverse checkbox, Count and Pull-out rows, pattern lists (see the note above patchUi())
 
   if(eject_status == true){
   lv_obj_add_state(ui_ejectaddon, LV_STATE_CHECKED);
@@ -1677,6 +1722,28 @@ void loop()
           lv_slider_set_value(ui_tweakdialslider, (int)tweakDialRpm, LV_ANIM_OFF);
         }
 
+        // E2 Burst Pull-out count (fast strokes per run), 1 per detent, or drag the slider
+        {
+          bool countChanged = false;
+          if(lv_slider_is_dragged(ui_tweakcountslider) == false){
+            if (encoder2.getCount() >= 2){
+              tweakBurstCount += 1; countChanged = true; encoder2.setCount(0);
+            } else if (encoder2.getCount() <= -2){
+              tweakBurstCount -= 1; countChanged = true; encoder2.setCount(0);
+            }
+          } else if (lv_slider_get_value(ui_tweakcountslider) != tweakBurstCount){
+            tweakBurstCount = lv_slider_get_value(ui_tweakcountslider); countChanged = true;
+          }
+          tweakBurstCount = constrain(tweakBurstCount, TWEAK_COUNT_MIN, TWEAK_COUNT_MAX);
+          if (countChanged) tweakSetBurstCount(tweakBurstCount);
+          if(lv_slider_is_dragged(ui_tweakcountslider) == false){
+            lv_slider_set_value(ui_tweakcountslider, tweakBurstCount, LV_ANIM_OFF);
+          }
+          char count_v[12];
+          snprintf(count_v, sizeof(count_v), "%d", tweakBurstCount);
+          lv_label_set_text(ui_tweakcountvalue, count_v);
+        }
+
         // E3 Reverse (whole axis): turn right = on, turn left = off
         {
           bool newTweakReverse = tweakReverse;
@@ -1700,6 +1767,30 @@ void loop()
           }
         }
 
+        // E4 Burst Pull-out pull-out scale (percent, scales the whole slowdown range), 10 per detent, or drag the slider
+        {
+          bool pullChanged = false;
+          if(lv_slider_is_dragged(ui_tweakpullslider) == false){
+            if (encoder4.getCount() >= encoder4_enc + 2){
+              tweakPullPct += 10.0f; pullChanged = true;
+              encoder4_enc = encoder4.getCount();
+            } else if (encoder4.getCount() <= encoder4_enc - 2){
+              tweakPullPct -= 10.0f; pullChanged = true;
+              encoder4_enc = encoder4.getCount();
+            }
+          } else if (lv_slider_get_value(ui_tweakpullslider) != (int)tweakPullPct){
+            tweakPullPct = lv_slider_get_value(ui_tweakpullslider); pullChanged = true;
+          }
+          tweakPullPct = constrain(tweakPullPct, TWEAK_PULL_MIN, TWEAK_PULL_MAX);
+          if (pullChanged) tweakSetPullScale(tweakPullPct);
+          if(lv_slider_is_dragged(ui_tweakpullslider) == false){
+            lv_slider_set_value(ui_tweakpullslider, (int)tweakPullPct, LV_ANIM_OFF);
+          }
+          char pull_v[12];
+          snprintf(pull_v, sizeof(pull_v), "%d%%", (int)tweakPullPct);
+          lv_label_set_text(ui_tweakpullvalue, pull_v);
+        }
+
         char tweak_v[16];
         snprintf(tweak_v, sizeof(tweak_v), "%d rpm", (int)tweakDialRpm);
         lv_label_set_text(ui_tweakdialvalue, tweak_v);
@@ -1711,7 +1802,7 @@ void loop()
         lv_label_set_text(ui_TweakButtonMText, RotationOn ? "Stop" : "Start");
 
         if(click2_double_waspressed == true){
-         resetTweak();                                                            // L double -> dial cap to default
+         resetTweak();                                                            // L double -> dial cap, count and pull-out to default
         } else if(click2_short_waspressed == true){
          lv_obj_send_event(ui_TweakButtonL, LV_EVENT_CLICKED, NULL);              // L click -> Menu
         } else if(mxclick_short_waspressed == true){
